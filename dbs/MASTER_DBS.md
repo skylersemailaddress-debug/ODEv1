@@ -1,7 +1,7 @@
 ---
 id: ode.opsdeskecommerce
 version: 0.1.0
-sha256: cedf04a9ff1ae7caf10103bb80e0de9e6fba1092cf92c27acf4d9ee7cf2ce570
+sha256: 2c80c818a19d2fb176e9cf9f49233a17b01d114eb01d860664234b0361be1e2c
 ---
 ## 0. DBS Metadata (Machine-Read)
 
@@ -2960,4 +2960,5 @@ Any item in Appendix A must be promoted by:
 - DBS version bump
 - Gate updates
 - Canonical example pack updates where applicable
+
 
