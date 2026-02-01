@@ -12,7 +12,7 @@ function Get-FileSha256([string]$P) {
 
 function Split-Frontmatter([string]$Text) {
   $lines = $Text -split "`r?`n"
-  if ($lines.Length -lt 3) { return @{ has=$false } }
+  if ($lines.Length -lt 1) { return @{ has=$false } }
   if ($lines[0].Trim() -ne "---") { return @{ has=$false } }
   $end = -1
   for ($i=1; $i -lt $lines.Length; $i++) {
@@ -35,6 +35,7 @@ function Update-FrontmatterSha([string]$Fm, [string]$Sha) {
     }
   }
 
+  # If there's an odp_compiler_contract block, add sha inside it.
   for ($i=0; $i -lt $lines.Length; $i++) {
     if ($lines[$i] -match "^\s*odp_compiler_contract\s*:\s*$") {
       $blockIndent = ([Regex]::Match($lines[$i], "^\s*")).Value
@@ -54,16 +55,33 @@ $text = Get-Content -LiteralPath $Path -Raw
 $sha  = Get-FileSha256 $Path
 
 $parts = Split-Frontmatter $text
-if (!$parts.has) { throw "FATAL: DBS frontmatter missing. Add a YAML frontmatter block delimited by --- at the top." }
+
+if (!$parts.has) {
+  # Robot mode: create minimal frontmatter automatically
+  $fm = @(
+    "id: ode.opsdeskecommerce"
+    "version: 0.1.0"
+    "sha256: $sha"
+  ) -join "`n"
+
+  $newText = "---`n$fm`n---`n$text"
+  if ($InPlace) { Set-Content -LiteralPath $Path -Value $newText -Encoding utf8 }
+  Write-Host "DBS_SHA256_COMPUTED=$sha"
+  Write-Host "DBS_FRONTMATTER_CREATED=1"
+  Write-Host "DBS_SHA_REFRESHED=1"
+  exit 0
+}
 
 $newFm   = Update-FrontmatterSha $parts.fm $sha
 $newText = "---`n$newFm`n---`n$($parts.body)"
 
 if ($newText -ne $text) {
-  if ($InPlace) { Set-Content -LiteralPath $Path -Value $newText -Encoding utf8 -NoNewline }
+  if ($InPlace) { Set-Content -LiteralPath $Path -Value $newText -Encoding utf8 }
   Write-Host "DBS_SHA256_COMPUTED=$sha"
+  Write-Host "DBS_FRONTMATTER_CREATED=0"
   Write-Host "DBS_SHA_REFRESHED=1"
 } else {
   Write-Host "DBS_SHA256_COMPUTED=$sha"
+  Write-Host "DBS_FRONTMATTER_CREATED=0"
   Write-Host "DBS_SHA_REFRESHED=0"
 }

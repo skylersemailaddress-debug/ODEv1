@@ -1,3 +1,8 @@
+---
+id: ode.opsdeskecommerce
+version: 0.1.0
+sha256: cedf04a9ff1ae7caf10103bb80e0de9e6fba1092cf92c27acf4d9ee7cf2ce570
+---
 ## 0. DBS Metadata (Machine-Read)
 
 ```yaml
@@ -2955,3 +2960,4 @@ Any item in Appendix A must be promoted by:
 - DBS version bump
 - Gate updates
 - Canonical example pack updates where applicable
+
