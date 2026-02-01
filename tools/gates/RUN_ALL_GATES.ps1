@@ -6,6 +6,65 @@ param(
 $ErrorActionPreference="Stop"
 $ProgressPreference="SilentlyContinue"
 
+
+# ODE_CANONICAL_DBS_SHA_EXCLUDES_SHA256_LINE_V1
+function Get-CanonicalDbsSha256([string]$P) {
+  if (!(Test-Path -LiteralPath $P)) { throw "FATAL: missing file: $P" }
+
+  $t = Get-Content -LiteralPath $P -Raw
+
+  # Strip UTF-8 BOM if present (U+FEFF)
+  if ($t.Length -gt 0 -and [int]$t[0] -eq 0xFEFF) { $t = $t.Substring(1) }
+
+  # Normalize newlines to LF for hashing determinism
+  $t = ($t -replace "
+", "
+") -replace "", "
+"
+
+  # Split into lines
+  $lines = $t -split "
+"
+
+  # Skip leading blank lines
+  $start = 0
+  while ($start -lt $lines.Length -and $lines[$start].Trim().Length -eq 0) { $start++ }
+
+  # If no frontmatter, hash entire normalized text
+  if (($lines.Length - $start) -lt 3 -or $lines[$start].Trim() -ne "---") {
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($t)
+    $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return ([System.BitConverter]::ToString($sha) -replace "-", "").ToLowerInvariant()
+  }
+
+  # Find end delimiter
+  $end = -1
+  for ($i = $start + 1; $i -lt $lines.Length; $i++) {
+    if ($lines[$i].Trim() -eq "---") { $end = $i; break }
+  }
+  if ($end -lt 0) {
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($t)
+    $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return ([System.BitConverter]::ToString($sha) -replace "-", "").ToLowerInvariant()
+  }
+
+  # Remove only the TOP-LEVEL sha256 line inside the frontmatter block
+  for ($i = $start + 1; $i -lt $end; $i++) {
+    if ($lines[$i] -match '^\s*sha256\s*:\s*') {
+      # Keep line count stable: blank it out (not delete) to avoid shifting content
+      $lines[$i] = ""
+      break
+    }
+  }
+
+  $canon = ($lines -join "
+").TrimEnd() + "
+"
+  $bytes2 = [System.Text.UTF8Encoding]::new($false).GetBytes($canon)
+  $sha2 = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes2)
+  return ([System.BitConverter]::ToString($sha2) -replace "-", "").ToLowerInvariant()
+}
+
 function Fail([string]$Reason) {
   Write-Host "FAIL_REASON=$Reason"
   Write-Host "ALL_GATES_PASS=0"
@@ -17,20 +76,35 @@ function Get-FileSha256([string]$Path) {
   return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Normalize-Text([string]$Text) {
+  # Strip UTF-8 BOM if present
+  if ($Text.Length -gt 0 -and [int]$Text[0] -eq 0xFEFF) { $Text = $Text.Substring(1) }
+  return $Text
+}
+
 function Get-Frontmatter([string]$Text) {
+  $Text = Normalize-Text $Text
+
   $lines = $Text -split "`r?`n"
-  if ($lines.Length -lt 3) { return $null }
-  if ($lines[0].Trim() -ne "---") { return $null }
+
+  # Skip leading blank lines
+  $start = 0
+  while ($start -lt $lines.Length -and $lines[$start].Trim().Length -eq 0) { $start++ }
+
+  if (($lines.Length - $start) -lt 3) { return $null }
+  if ($lines[$start].Trim() -ne "---") { return $null }
+
   $end = -1
-  for ($i=1; $i -lt $lines.Length; $i++) {
+  for ($i=$start+1; $i -lt $lines.Length; $i++) {
     if ($lines[$i].Trim() -eq "---") { $end = $i; break }
   }
   if ($end -lt 0) { return $null }
-  return ($lines[1..($end-1)] -join "`n")
+
+  if ($end -le ($start+1)) { return "" } # empty frontmatter
+  return ($lines[($start+1)..($end-1)] -join "`n")
 }
 
 function Get-YamlScalar([string]$Yaml, [string]$Key) {
-  # Top-level scalar: key: value
   $pat = "^(?m)\s*" + [Regex]::Escape($Key) + "\s*:\s*(.+?)\s*$"
   $m = [Regex]::Match($Yaml, $pat)
   if (!$m.Success) { return $null }
@@ -42,9 +116,6 @@ function Get-YamlScalar([string]$Yaml, [string]$Key) {
 }
 
 function Get-YamlNestedScalar([string]$Yaml, [string]$BlockKey, [string]$InnerKey) {
-  # Minimal YAML nested block reader:
-  # blockkey:
-  #   innerkey: value
   $lines = $Yaml -split "`r?`n"
   $blockLineIdx = -1
   for ($i=0; $i -lt $lines.Length; $i++) {
@@ -52,7 +123,6 @@ function Get-YamlNestedScalar([string]$Yaml, [string]$BlockKey, [string]$InnerKe
   }
   if ($blockLineIdx -lt 0) { return $null }
 
-  # Determine block indent
   $blockIndent = ([Regex]::Match($lines[$blockLineIdx], "^\s*")).Value.Length
 
   for ($j = $blockLineIdx + 1; $j -lt $lines.Length; $j++) {
@@ -60,7 +130,7 @@ function Get-YamlNestedScalar([string]$Yaml, [string]$BlockKey, [string]$InnerKe
     if ($line.Trim().Length -eq 0) { continue }
 
     $indent = ([Regex]::Match($line, "^\s*")).Value.Length
-    if ($indent -le $blockIndent) { break } # left block
+    if ($indent -le $blockIndent) { break }
 
     $m = [Regex]::Match($line, "^\s*" + [Regex]::Escape($InnerKey) + "\s*:\s*(.+?)\s*$")
     if ($m.Success) {
@@ -91,7 +161,8 @@ Write-Host "GATE_OK=ODE_ABI_JSON_PARSE"
 
 Write-Host "GATE_START=ODE_DBS_SHA_CHECK"
 $dbsText = Get-Content -LiteralPath $DBS -Raw
-$dbsSha = Get-FileSha256 $DBS
+$dbsText = Normalize-Text $dbsText
+$dbsSha = Get-CanonicalDbsSha256 $DBS
 Write-Host "DBS_SHA256_COMPUTED=$dbsSha"
 
 $fm = Get-Frontmatter $dbsText
