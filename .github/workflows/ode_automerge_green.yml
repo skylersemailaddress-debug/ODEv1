@@ -1,0 +1,79 @@
+name: ODE Automerge Green PRs
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide + enable automerge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) return;
+
+            // Only handle PRs whose head is in THIS repo (not forks) to avoid security issues.
+            if (pr.head.repo.full_name !== context.payload.repository.full_name) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: "Robot mode: fork PR detected. I won't automerge forks. If checks go green, a maintainer can merge."
+              });
+              return;
+            }
+
+            if (pr.draft) return;
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = pr.number;
+
+            // Fetch changed files
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: prNumber, per_page: 100
+            });
+            const names = files.map(f => f.filename);
+
+            // Robot rule: if PR only touches DBS and/or workflow scaffolding, auto-label for automerge.
+            const allowed = names.every(n =>
+              n.startsWith("dbs/") ||
+              n.startsWith("tools/") ||
+              n.startsWith("src/") ||
+              n.startsWith("examples/") ||
+              n.startsWith(".github/workflows/") ||
+              n === "README.md"
+            );
+
+            if (allowed) {
+              // add automerge label (idempotent)
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: prNumber, labels: ["automerge"]
+              });
+            }
+
+            // Require the label to actually enable automerge (gives you a manual "off switch")
+            const labels = pr.labels.map(l => l.name);
+            if (!labels.includes("automerge")) return;
+
+            // Enable auto-merge (squash). If repo doesn't have auto-merge enabled, this will fail.
+            const query = `
+              mutation EnableAutoMerge($prId:ID!) {
+                enablePullRequestAutoMerge(input:{pullRequestId:$prId, mergeMethod:SQUASH}) {
+                  pullRequest { number autoMergeRequest { enabledAt } }
+                }
+              }
+            `;
+            await github.graphql(query, { prId: pr.node_id });
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber,
+              body: "Robot mode: ✅ auto-merge enabled (squash). If required checks go green, GitHub will merge automatically."
+            });

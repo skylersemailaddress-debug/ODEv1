@@ -1,0 +1,76 @@
+name: ODE Setup Sanity
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check repo settings + branch protection
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const defaultBranch = context.payload.repository.default_branch;
+
+            let ok = true;
+            const lines = [];
+            const warn = (s) => { lines.push(`- ⚠️ ${s}`); ok = false; };
+            const pass = (s) => lines.push(`- ✅ ${s}`);
+
+            // Repo settings
+            const r = await github.rest.repos.get({ owner, repo });
+            if (r.data.allow_auto_merge) pass("Auto-merge is ENABLED in repo settings.");
+            else warn("Auto-merge is DISABLED. Enable it: Settings → Pull Requests → Auto-merge.");
+
+            // Branch protection (may require admin; if forbidden, we report that clearly)
+            try {
+              const bp = await github.rest.repos.getBranchProtection({
+                owner, repo, branch: defaultBranch
+              });
+
+              pass(`Branch protection FOUND for '${defaultBranch}'.`);
+
+              const req = bp.data.required_status_checks;
+              if (!req || req.strict === undefined) {
+                warn("Required status checks block is missing/unexpected. Ensure 'Require status checks to pass' is enabled.");
+              } else {
+                pass("Required status checks are configured.");
+              }
+
+              const contexts = (req && Array.isArray(req.contexts)) ? req.contexts : [];
+              const need = "ODE Autoprogram";
+              if (contexts.includes(need)) pass(`Required check includes '${need}'.`);
+              else warn(`Required check does NOT include '${need}'. Add it under branch protection → required status checks.`);
+
+              if (bp.data.required_pull_request_reviews) pass("PR review requirement exists (fine either way).");
+              else warn("PR review requirement is not enabled. Optional: require PRs before merge to prevent accidents.");
+
+            } catch (e) {
+              // 404 => no protection, 403 => insufficient perms
+              if (e.status === 404) warn(`No branch protection found for '${defaultBranch}'. Add a protection rule and require 'ODE Autoprogram' check.`);
+              else if (e.status === 403) warn(`Could not read branch protection (403). If you are not an admin, run this workflow as an admin or just manually set protection on '${defaultBranch}'.`);
+              else warn(`Branch protection check failed: ${e.message || e}`);
+            }
+
+            // Write summary
+            const summary = [
+              `# ODE Setup Sanity`,
+              ``,
+              `Repo: **${owner}/${repo}**`,
+              `Default branch: **${defaultBranch}**`,
+              ``,
+              ...lines,
+              ``,
+              ok ? "✅ **Setup looks good. Robot mode can run hands-off.**" : "❌ **Setup needs fixes. Follow the warnings above.**"
+            ].join("\n");
+
+            core.summary.addRaw(summary).write();
+
+            if (!ok) core.setFailed("Setup sanity failed. Fix repo settings/branch protection.");
