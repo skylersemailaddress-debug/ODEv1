@@ -6,6 +6,65 @@ param(
 $ErrorActionPreference="Stop"
 $ProgressPreference="SilentlyContinue"
 
+
+# ODE_CANONICAL_DBS_SHA_EXCLUDES_SHA256_LINE_V1
+function Get-CanonicalDbsSha256([string]$P) {
+  if (!(Test-Path -LiteralPath $P)) { throw "FATAL: missing file: $P" }
+
+  $t = Get-Content -LiteralPath $P -Raw
+
+  # Strip UTF-8 BOM if present (U+FEFF)
+  if ($t.Length -gt 0 -and [int]$t[0] -eq 0xFEFF) { $t = $t.Substring(1) }
+
+  # Normalize newlines to LF for hashing determinism
+  $t = ($t -replace "
+", "
+") -replace "", "
+"
+
+  # Split into lines
+  $lines = $t -split "
+"
+
+  # Skip leading blank lines
+  $start = 0
+  while ($start -lt $lines.Length -and $lines[$start].Trim().Length -eq 0) { $start++ }
+
+  # If no frontmatter, hash entire normalized text
+  if (($lines.Length - $start) -lt 3 -or $lines[$start].Trim() -ne "---") {
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($t)
+    $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return ([System.BitConverter]::ToString($sha) -replace "-", "").ToLowerInvariant()
+  }
+
+  # Find end delimiter
+  $end = -1
+  for ($i = $start + 1; $i -lt $lines.Length; $i++) {
+    if ($lines[$i].Trim() -eq "---") { $end = $i; break }
+  }
+  if ($end -lt 0) {
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($t)
+    $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return ([System.BitConverter]::ToString($sha) -replace "-", "").ToLowerInvariant()
+  }
+
+  # Remove only the TOP-LEVEL sha256 line inside the frontmatter block
+  for ($i = $start + 1; $i -lt $end; $i++) {
+    if ($lines[$i] -match '^\s*sha256\s*:\s*') {
+      # Keep line count stable: blank it out (not delete) to avoid shifting content
+      $lines[$i] = ""
+      break
+    }
+  }
+
+  $canon = ($lines -join "
+").TrimEnd() + "
+"
+  $bytes2 = [System.Text.UTF8Encoding]::new($false).GetBytes($canon)
+  $sha2 = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes2)
+  return ([System.BitConverter]::ToString($sha2) -replace "-", "").ToLowerInvariant()
+}
+
 function Fail([string]$Reason) {
   Write-Host "FAIL_REASON=$Reason"
   Write-Host "ALL_GATES_PASS=0"
@@ -103,7 +162,7 @@ Write-Host "GATE_OK=ODE_ABI_JSON_PARSE"
 Write-Host "GATE_START=ODE_DBS_SHA_CHECK"
 $dbsText = Get-Content -LiteralPath $DBS -Raw
 $dbsText = Normalize-Text $dbsText
-$dbsSha = Get-FileSha256 $DBS
+$dbsSha = Get-CanonicalDbsSha256 $DBS
 Write-Host "DBS_SHA256_COMPUTED=$dbsSha"
 
 $fm = Get-Frontmatter $dbsText
