@@ -29,15 +29,49 @@ function Get-Frontmatter([string]$Text) {
   return ($lines[1..($end-1)] -join "`n")
 }
 
-function Try-Extract-FrontmatterField([string]$Frontmatter, [string]$Key) {
+function Get-YamlScalar([string]$Yaml, [string]$Key) {
+  # Top-level scalar: key: value
   $pat = "^(?m)\s*" + [Regex]::Escape($Key) + "\s*:\s*(.+?)\s*$"
-  $m = [Regex]::Match($Frontmatter, $pat)
+  $m = [Regex]::Match($Yaml, $pat)
   if (!$m.Success) { return $null }
   $v = $m.Groups[1].Value.Trim()
   if (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) {
     $v = $v.Substring(1, $v.Length-2)
   }
   return $v
+}
+
+function Get-YamlNestedScalar([string]$Yaml, [string]$BlockKey, [string]$InnerKey) {
+  # Minimal YAML nested block reader:
+  # blockkey:
+  #   innerkey: value
+  $lines = $Yaml -split "`r?`n"
+  $blockLineIdx = -1
+  for ($i=0; $i -lt $lines.Length; $i++) {
+    if ($lines[$i] -match ("^\s*" + [Regex]::Escape($BlockKey) + "\s*:\s*$")) { $blockLineIdx = $i; break }
+  }
+  if ($blockLineIdx -lt 0) { return $null }
+
+  # Determine block indent
+  $blockIndent = ([Regex]::Match($lines[$blockLineIdx], "^\s*")).Value.Length
+
+  for ($j = $blockLineIdx + 1; $j -lt $lines.Length; $j++) {
+    $line = $lines[$j]
+    if ($line.Trim().Length -eq 0) { continue }
+
+    $indent = ([Regex]::Match($line, "^\s*")).Value.Length
+    if ($indent -le $blockIndent) { break } # left block
+
+    $m = [Regex]::Match($line, "^\s*" + [Regex]::Escape($InnerKey) + "\s*:\s*(.+?)\s*$")
+    if ($m.Success) {
+      $v = $m.Groups[1].Value.Trim()
+      if (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) {
+        $v = $v.Substring(1, $v.Length-2)
+      }
+      return $v
+    }
+  }
+  return $null
 }
 
 Write-Host "GATE_START=ODE_DBS_EXISTS"
@@ -49,11 +83,7 @@ if (!(Test-Path -LiteralPath $ABI)) { Fail "abi_missing:$ABI" }
 Write-Host "GATE_OK=ODE_ABI_EXISTS"
 
 Write-Host "GATE_START=ODE_ABI_JSON_PARSE"
-try {
-  $abiObj = Get-Content -LiteralPath $ABI -Raw | ConvertFrom-Json
-} catch {
-  Fail "abi_json_parse_failed"
-}
+try { $abiObj = Get-Content -LiteralPath $ABI -Raw | ConvertFrom-Json } catch { Fail "abi_json_parse_failed" }
 if ($null -eq $abiObj.abi_id -or $null -eq $abiObj.abi_version) { Fail "abi_missing_required_fields" }
 Write-Host "ABI_ID=$($abiObj.abi_id)"
 Write-Host "ABI_VERSION=$($abiObj.abi_version)"
@@ -67,21 +97,20 @@ Write-Host "DBS_SHA256_COMPUTED=$dbsSha"
 $fm = Get-Frontmatter $dbsText
 if ($null -eq $fm) { Fail "dbs_frontmatter_missing" }
 
-$declared = Try-Extract-FrontmatterField $fm "sha256"
-if ($null -eq $declared) { $declared = Try-Extract-FrontmatterField $fm "odp_compiler_contract.sha256" }
+$declared = Get-YamlScalar $fm "sha256"
+if ($null -eq $declared) { $declared = Get-YamlNestedScalar $fm "odp_compiler_contract" "sha256" }
 if ($null -eq $declared) { Fail "dbs_frontmatter_sha256_missing" }
 
 $declared = $declared.ToLowerInvariant()
 Write-Host "DBS_SHA256_DECLARED=$declared"
 if ($declared -ne $dbsSha) { Fail "dbs_sha_mismatch" }
-
 Write-Host "GATE_OK=ODE_DBS_SHA_CHECK"
 
 Write-Host "GATE_START=ODE_DBS_COMPILER_CONTRACT"
-$id = Try-Extract-FrontmatterField $fm "id"
-if ($null -eq $id) { $id = Try-Extract-FrontmatterField $fm "odp_compiler_contract.id" }
-$ver = Try-Extract-FrontmatterField $fm "version"
-if ($null -eq $ver) { $ver = Try-Extract-FrontmatterField $fm "odp_compiler_contract.version" }
+$id = Get-YamlScalar $fm "id"
+$ver = Get-YamlScalar $fm "version"
+if ($null -eq $id) { $id = Get-YamlNestedScalar $fm "odp_compiler_contract" "id" }
+if ($null -eq $ver) { $ver = Get-YamlNestedScalar $fm "odp_compiler_contract" "version" }
 if ($null -eq $id -or $null -eq $ver) { Fail "dbs_compiler_contract_missing_fields" }
 
 Write-Host "APP_ID=$id"
