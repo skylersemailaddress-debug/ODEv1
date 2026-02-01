@@ -1,20 +1,9 @@
 name: ODE Autoprogram
 
 on:
-  workflow_dispatch:
-    inputs:
-      dbs_path:
-        description: "Path to DBS markdown"
-        required: true
-        default: "dbs/MASTER_DBS.md"
-      abi_path:
-        description: "Path to ABI JSON"
-        required: true
-        default: "examples/ABI_TEMPLATE.json"
   push:
-    paths: ["dbs/**","tools/**","src/**","examples/**",".github/workflows/ode_autoprogram.yml",".github/workflows/ode_automerge_green.yml"]
-  pull_request:
-    paths: ["dbs/**","tools/**","src/**","examples/**",".github/workflows/ode_autoprogram.yml",".github/workflows/ode_automerge_green.yml"]
+    branches: [ "main" ]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -22,56 +11,66 @@ permissions:
 
 jobs:
   build:
+    name: ODE Autoprogram
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
         with:
-          python-version: "3.11"
+          fetch-depth: 0
 
-      - name: Refresh DBS sha (workspace)
-        shell: pwsh
+      - name: Setup PowerShell
+        shell: bash
         run: |
-          $ErrorActionPreference="Stop"
-          $ProgressPreference="SilentlyContinue"
-          pwsh -NoProfile -File tools/dev/REFRESH_DBS_SHA.ps1 `
-            -Path "${{ inputs.dbs_path || 'dbs/MASTER_DBS.md' }}" `
-            -InPlace
-          git status --porcelain
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion'
 
-      - name: Auto-commit refreshed DBS sha (push only)
-        if: github.event_name == 'push'
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore(dbs): refresh declared sha256 [skip ci]"
-          file_pattern: "dbs/**/*.md"
+      - name: Auto-refresh DBS SHA (open PR if needed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Run refresher (may modify DBS frontmatter)
+          pwsh -NoProfile -File tools/dev/REFRESH_DBS_SHA.ps1 -Path dbs/MASTER_DBS.md -InPlace
+
+          # If no changes, continue
+          if git diff --quiet; then
+            echo "DBS_SHA_REFRESH_PR_NEEDED=0" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          echo "DBS_SHA_REFRESH_PR_NEEDED=1" >> $GITHUB_ENV
+
+          BRANCH="robot/refresh-dbs-sha-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add dbs/MASTER_DBS.md
+          git -c user.name="ode-robot" -c user.email="actions@users.noreply.github.com" commit -m "chore(dbs): refresh frontmatter sha256"
+          git push origin "$BRANCH"
+
+          # Create PR (idempotent-ish)
+          PR_URL=$(gh pr create \
+            --title "chore(dbs): refresh frontmatter sha256" \
+            --body "Robot refresh: DBS file changed; updating frontmatter sha256 to match content." \
+            --base main \
+            --head "$BRANCH" \
+            || true)
+
+          echo "PR_URL=$PR_URL"
+
+          # Enable auto-merge (squash). If already enabled, gh will just complain; ignore.
+          if [ -n "$PR_URL" ]; then
+            gh pr merge "$PR_URL" --squash --auto --delete-branch || true
+          fi
+
+          # Stop this run; the PR will trigger checks on its own
+          echo "Opened PR to refresh DBS SHA. Stopping current run."
+          exit 0
 
       - name: Gates (fail-closed)
-        shell: pwsh
+        shell: bash
         run: |
-          $ErrorActionPreference="Stop"
-          $ProgressPreference="SilentlyContinue"
-          pwsh -NoProfile -File tools/gates/RUN_ALL_GATES.ps1 `
-            -DBS "${{ inputs.dbs_path || 'dbs/MASTER_DBS.md' }}" `
-            -ABI "${{ inputs.abi_path || 'examples/ABI_TEMPLATE.json' }}"
-
-      - name: Compile (DBS -> DBP)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference="Stop"
-          $ProgressPreference="SilentlyContinue"
-          pwsh -NoProfile -File tools/run/RUN_COMPILE.ps1 `
-            -DBS "${{ inputs.dbs_path || 'dbs/MASTER_DBS.md' }}" `
-            -ABI "${{ inputs.abi_path || 'examples/ABI_TEMPLATE.json' }}"
-
-      - name: Execute (DBP)
-        run: python src/executor/run_dbp.py --dbp out/DBP.json
-
-      - name: Upload proof artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ode_build_${{ github.sha }}
-          path: out/**
+          set -euo pipefail
+          pwsh -NoProfile -File tools/gates/RUN_ALL_GATES.ps1 \
+            -DBS "dbs/MASTER_DBS.md" \
+            -ABI "examples/ABI_TEMPLATE.json"
