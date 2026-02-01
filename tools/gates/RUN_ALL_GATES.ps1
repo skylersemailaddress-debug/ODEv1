@@ -17,20 +17,35 @@ function Get-FileSha256([string]$Path) {
   return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Normalize-Text([string]$Text) {
+  # Strip UTF-8 BOM if present
+  if ($Text.Length -gt 0 -and [int]$Text[0] -eq 0xFEFF) { $Text = $Text.Substring(1) }
+  return $Text
+}
+
 function Get-Frontmatter([string]$Text) {
+  $Text = Normalize-Text $Text
+
   $lines = $Text -split "`r?`n"
-  if ($lines.Length -lt 3) { return $null }
-  if ($lines[0].Trim() -ne "---") { return $null }
+
+  # Skip leading blank lines
+  $start = 0
+  while ($start -lt $lines.Length -and $lines[$start].Trim().Length -eq 0) { $start++ }
+
+  if (($lines.Length - $start) -lt 3) { return $null }
+  if ($lines[$start].Trim() -ne "---") { return $null }
+
   $end = -1
-  for ($i=1; $i -lt $lines.Length; $i++) {
+  for ($i=$start+1; $i -lt $lines.Length; $i++) {
     if ($lines[$i].Trim() -eq "---") { $end = $i; break }
   }
   if ($end -lt 0) { return $null }
-  return ($lines[1..($end-1)] -join "`n")
+
+  if ($end -le ($start+1)) { return "" } # empty frontmatter
+  return ($lines[($start+1)..($end-1)] -join "`n")
 }
 
 function Get-YamlScalar([string]$Yaml, [string]$Key) {
-  # Top-level scalar: key: value
   $pat = "^(?m)\s*" + [Regex]::Escape($Key) + "\s*:\s*(.+?)\s*$"
   $m = [Regex]::Match($Yaml, $pat)
   if (!$m.Success) { return $null }
@@ -42,9 +57,6 @@ function Get-YamlScalar([string]$Yaml, [string]$Key) {
 }
 
 function Get-YamlNestedScalar([string]$Yaml, [string]$BlockKey, [string]$InnerKey) {
-  # Minimal YAML nested block reader:
-  # blockkey:
-  #   innerkey: value
   $lines = $Yaml -split "`r?`n"
   $blockLineIdx = -1
   for ($i=0; $i -lt $lines.Length; $i++) {
@@ -52,7 +64,6 @@ function Get-YamlNestedScalar([string]$Yaml, [string]$BlockKey, [string]$InnerKe
   }
   if ($blockLineIdx -lt 0) { return $null }
 
-  # Determine block indent
   $blockIndent = ([Regex]::Match($lines[$blockLineIdx], "^\s*")).Value.Length
 
   for ($j = $blockLineIdx + 1; $j -lt $lines.Length; $j++) {
@@ -60,7 +71,7 @@ function Get-YamlNestedScalar([string]$Yaml, [string]$BlockKey, [string]$InnerKe
     if ($line.Trim().Length -eq 0) { continue }
 
     $indent = ([Regex]::Match($line, "^\s*")).Value.Length
-    if ($indent -le $blockIndent) { break } # left block
+    if ($indent -le $blockIndent) { break }
 
     $m = [Regex]::Match($line, "^\s*" + [Regex]::Escape($InnerKey) + "\s*:\s*(.+?)\s*$")
     if ($m.Success) {
@@ -91,6 +102,7 @@ Write-Host "GATE_OK=ODE_ABI_JSON_PARSE"
 
 Write-Host "GATE_START=ODE_DBS_SHA_CHECK"
 $dbsText = Get-Content -LiteralPath $DBS -Raw
+$dbsText = Normalize-Text $dbsText
 $dbsSha = Get-FileSha256 $DBS
 Write-Host "DBS_SHA256_COMPUTED=$dbsSha"
 

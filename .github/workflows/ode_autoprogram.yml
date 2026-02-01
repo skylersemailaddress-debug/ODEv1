@@ -1,7 +1,7 @@
 name: ODE Autoprogram
 
 on:
-  push:
+  pull_request:
     branches: [ "main" ]
   workflow_dispatch:
 
@@ -19,10 +19,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup PowerShell
+      - name: Assert gh CLI available
         shell: bash
         run: |
-          pwsh -NoProfile -Command '$PSVersionTable.PSVersion'
+          set -euo pipefail
+          command -v gh >/dev/null 2>&1 || { echo "FATAL: gh CLI not found on runner"; exit 1; }
+          gh --version
 
       - name: Auto-refresh DBS SHA (open PR if needed)
         env:
@@ -31,10 +33,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Run refresher (may modify DBS frontmatter)
           pwsh -NoProfile -File tools/dev/REFRESH_DBS_SHA.ps1 -Path dbs/MASTER_DBS.md -InPlace
 
-          # If no changes, continue
           if git diff --quiet; then
             echo "DBS_SHA_REFRESH_PR_NEEDED=0" >> $GITHUB_ENV
             exit 0
@@ -48,7 +48,6 @@ jobs:
           git -c user.name="ode-robot" -c user.email="actions@users.noreply.github.com" commit -m "chore(dbs): refresh frontmatter sha256"
           git push origin "$BRANCH"
 
-          # Create PR (idempotent-ish)
           PR_URL=$(gh pr create \
             --title "chore(dbs): refresh frontmatter sha256" \
             --body "Robot refresh: DBS file changed; updating frontmatter sha256 to match content." \
@@ -58,12 +57,10 @@ jobs:
 
           echo "PR_URL=$PR_URL"
 
-          # Enable auto-merge (squash). If already enabled, gh will just complain; ignore.
           if [ -n "$PR_URL" ]; then
             gh pr merge "$PR_URL" --squash --auto --delete-branch || true
           fi
 
-          # Stop this run; the PR will trigger checks on its own
           echo "Opened PR to refresh DBS SHA. Stopping current run."
           exit 0
 
