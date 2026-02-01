@@ -1,10 +1,10 @@
-$ErrorActionPreference="Stop"
-$ProgressPreference="SilentlyContinue"
-
 param(
   [Parameter(Mandatory=$true)][string]$DBS,
   [Parameter(Mandatory=$true)][string]$ABI
 )
+
+$ErrorActionPreference="Stop"
+$ProgressPreference="SilentlyContinue"
 
 function Get-FileSha256([string]$Path) {
   return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
@@ -20,7 +20,6 @@ New-Item -ItemType Directory -Force -Path out | Out-Null
 $dbsSha = Get-FileSha256 $DBS
 $abiSha = Get-FileSha256 $ABI
 
-# Minimal DBP contract: stable keys, stable ordering (ConvertTo-Json preserves hashtable insertion order)
 $dbp = [ordered]@{
   kind = "ode.dbp.v1"
   app = [ordered]@{

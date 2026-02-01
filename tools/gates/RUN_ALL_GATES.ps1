@@ -1,10 +1,10 @@
-$ErrorActionPreference="Stop"
-$ProgressPreference="SilentlyContinue"
-
 param(
   [Parameter(Mandatory=$true)][string]$DBS,
   [Parameter(Mandatory=$true)][string]$ABI
 )
+
+$ErrorActionPreference="Stop"
+$ProgressPreference="SilentlyContinue"
 
 function Fail([string]$Reason) {
   Write-Host "FAIL_REASON=$Reason"
@@ -18,8 +18,7 @@ function Get-FileSha256([string]$Path) {
 }
 
 function Get-Frontmatter([string]$Text) {
-  # frontmatter is first block delimited by --- lines at top
-  $lines = $Text -split "`r?`n"
+  $lines = $Text -split "`r?`n"
   if ($lines.Length -lt 3) { return $null }
   if ($lines[0].Trim() -ne "---") { return $null }
   $end = -1
@@ -31,12 +30,10 @@ function Get-Frontmatter([string]$Text) {
 }
 
 function Try-Extract-FrontmatterField([string]$Frontmatter, [string]$Key) {
-  # Extremely conservative parsing: matches "key: value" at line start
   $pat = "^(?m)\s*" + [Regex]::Escape($Key) + "\s*:\s*(.+?)\s*$"
   $m = [Regex]::Match($Frontmatter, $pat)
   if (!$m.Success) { return $null }
   $v = $m.Groups[1].Value.Trim()
-  # strip quotes if present
   if (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) {
     $v = $v.Substring(1, $v.Length-2)
   }
@@ -68,19 +65,10 @@ $dbsSha = Get-FileSha256 $DBS
 Write-Host "DBS_SHA256_COMPUTED=$dbsSha"
 
 $fm = Get-Frontmatter $dbsText
-if ($null -eq $fm) {
-  # Not always present, but strongly recommended. Fail-closed? We'll FAIL because you asked "tight".
-  Fail "dbs_frontmatter_missing"
-}
+if ($null -eq $fm) { Fail "dbs_frontmatter_missing" }
 
-# Your ODE DBS uses odp_compiler_contract.sha256 (per the file you loaded).
-$declared = $null
-# look for sha256 inside the frontmatter block
 $declared = Try-Extract-FrontmatterField $fm "sha256"
-if ($null -eq $declared) {
-  # fallback: very specific key
-  $declared = Try-Extract-FrontmatterField $fm "odp_compiler_contract.sha256"
-}
+if ($null -eq $declared) { $declared = Try-Extract-FrontmatterField $fm "odp_compiler_contract.sha256" }
 if ($null -eq $declared) { Fail "dbs_frontmatter_sha256_missing" }
 
 $declared = $declared.ToLowerInvariant()
@@ -91,13 +79,9 @@ Write-Host "GATE_OK=ODE_DBS_SHA_CHECK"
 
 Write-Host "GATE_START=ODE_DBS_COMPILER_CONTRACT"
 $id = Try-Extract-FrontmatterField $fm "id"
-if ($null -eq $id) {
-  $id = Try-Extract-FrontmatterField $fm "odp_compiler_contract.id"
-}
+if ($null -eq $id) { $id = Try-Extract-FrontmatterField $fm "odp_compiler_contract.id" }
 $ver = Try-Extract-FrontmatterField $fm "version"
-if ($null -eq $ver) {
-  $ver = Try-Extract-FrontmatterField $fm "odp_compiler_contract.version"
-}
+if ($null -eq $ver) { $ver = Try-Extract-FrontmatterField $fm "odp_compiler_contract.version" }
 if ($null -eq $id -or $null -eq $ver) { Fail "dbs_compiler_contract_missing_fields" }
 
 Write-Host "APP_ID=$id"
